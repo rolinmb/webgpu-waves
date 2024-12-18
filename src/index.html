@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>WebGPU Waves Animation</title>
+        <style>
+            body {
+                margin: 0;
+                overflow: hidden;
+            }
+            canvas {
+                display: block;
+            }
+        </style>
+    </head>
+    <body>
+        <canvas id="webgpu-canvas"></canvas>
+
+        <script type="module">
+            const canvas = document.getElementById('webgpu-canvas');
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            window.addEventListener('resize', () => {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            });
+
+            const adapter = await navigator.gpu.requestAdapter();
+            const device = await adapter.requestDevice();
+            const context = canvas.getContext('webgpu');
+
+            const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+            context.configure({
+                device,
+                format: canvasFormat,
+                alphaMode: 'opaque',
+            });
+
+            const shaderCode = `
+            struct Uniforms {
+                canvasSize: vec2<f32>, // 8 bytes
+                time: f32,             // 4 bytes
+                padding: f32,         // 4 bytes to align to 16 bytes
+            };
+            
+            @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+            @vertex
+            fn vertex_main(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
+                var positions = array<vec2<f32>, 3>(
+                    vec2<f32>(-1.0, -1.0),
+                    vec2<f32>(3.0, -1.0),
+                    vec2<f32>(-1.0, 3.0)
+                );
+                return vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+            }
+
+            @fragment
+            fn fragment_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+                let uv = (position.xy / uniforms.canvasSize) * 2.0 - 1.0; // normalize to [-1.0, 1.0]
+                let time = uniforms.time;
+
+                // Create wavy distortions based on sinusoidal functions
+                /*let waveX = sin(uv.x * 10.0 + time * 2.0); // Wave pattern along X
+                let waveY = cos(uv.y * 10.0 + time * 2.0); // Wave pattern along Y
+
+                let combinedWave = waveX + waveY; // Combine X and Y waves for interference patterns
+
+                // Add some dynamic variations based on UV
+                let dynamicWave = sin((uv.x + uv.y) * 15.0 + time * 3.0);
+
+                // Generate color based on wave values
+                let r = 0.5 + 0.5 * sin(combinedWave * 5.0 + time);
+                let g = 0.5 + 0.5 * sin(dynamicWave * 6.0 - time * 1.5);
+                let b = 0.5 + 0.5 * cos(combinedWave * 8.0 + time * 2.0);
+
+                // Optional alpha modulation
+                let a = 0.5 + 0.5 * sin(dynamicWave * 10.0 + time * 2.5);*/
+
+                // Create sine wave patterns
+                let wave = sin(uv.x * 10.0 + time) * cos(uv.y * 10.0 + time); // Classic wave interference
+
+                // Add flowing waves along the diagonal
+                let diagonalWave = sin((uv.x + uv.y) * 15.0 - time * 2.0);
+
+                // Combine the waves
+                let combinedWaves = wave + diagonalWave;
+
+                // Map the wave values to colors
+                let r = 0.5 + 0.5 * sin(combinedWaves * 5.0 + time * 1.0);
+                let g = 0.5 + 0.5 * cos(combinedWaves * 6.0 - time * 1.5);
+                let b = 0.5 + 0.5 * sin(combinedWaves * 7.0 + time * 2.0);
+
+                // Modulate alpha for additional visual effects
+                let a = 0.8 + 0.2 * sin(combinedWaves * 10.0 + time * 2.5);
+
+                return vec4<f32>(vec3<f32>(r, g, b), clamp(a, 0.0, 1.0));
+            }
+            `;
+
+            const module = device.createShaderModule({ code: shaderCode });
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module,
+                    entryPoint: 'vertex_main',
+                },
+                fragment: {
+                    module,
+                    entryPoint: 'fragment_main',
+                    targets: [{ format: canvasFormat }],
+                },
+                primitive: { topology: 'triangle-list' },
+            });
+
+            const uniformBuffer = device.createBuffer({
+                size: 16, // 4 floats (aligned): 2 for canvasSize + 1 for time + 1 padding
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+
+            const bindGroup = device.createBindGroup({
+                layout: pipeline.getBindGroupLayout(0),
+                entries: [
+                    {
+                        binding: 0,
+                        resource: {
+                            buffer: uniformBuffer,
+                        },
+                    },
+                ],
+            });
+
+            const render = (time) => {
+                const canvasSize = new Float32Array([canvas.width, canvas.height]);
+                const timeFloat = new Float32Array([time * 0.001]);
+
+                const uniformData = new Float32Array([...canvasSize, ...timeFloat, 0.0]);
+                device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
+                const commandEncoder = device.createCommandEncoder();
+                const passEncoder = commandEncoder.beginRenderPass({
+                    colorAttachments: [{
+                        view: context.getCurrentTexture().createView(),
+                        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+                        loadOp: 'clear',
+                        storeOp: 'store',
+                    }],
+                });
+
+                passEncoder.setPipeline(pipeline);
+                passEncoder.setBindGroup(0, bindGroup);
+                passEncoder.draw(3, 1, 0, 0);
+                passEncoder.end();
+
+                device.queue.submit([commandEncoder.finish()]);
+                requestAnimationFrame(render);
+            };
+
+            requestAnimationFrame(render);
+
+        </script>
+    </body>
+</html>
